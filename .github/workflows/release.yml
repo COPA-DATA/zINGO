@@ -1,0 +1,106 @@
+# Checks install_zenon.sh on every pull request and push; publishes a GitHub Release for v* tags.
+# See CONTRIBUTING.md for the branch/tag/release model.
+name: CI / Release
+
+on:
+  pull_request:
+  push:
+    branches: [main, 'release/**']
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  check:
+    name: Lint & smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Lint
+        run: |
+          bash -n install_zenon.sh
+          shellcheck --version | head -n 2
+          shellcheck install_zenon.sh
+
+      - name: Version check (tags only)
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          # --version prints "zINGO - zenon INstall and GO v<ZINGO_VERSION> (installs ...)".
+          version="$(./install_zenon.sh --version | grep -oE 'v[0-9]+(\.[0-9]+)*-[0-9]+' | head -n 1)"
+          echo "Script version: ${version}, tag: ${GITHUB_REF_NAME}"
+          if [ "$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} doesn't match the script's ZINGO_VERSION (${version})."
+            exit 1
+          fi
+
+      - name: Smoke test
+        run: |
+          ./install_zenon.sh --version
+          ./install_zenon.sh --help > /dev/null
+          # A dry run downloads and extracts the real Compose package (catches a broken
+          # COMPOSE_PKG_URL) and merges an override, then removes everything again.
+          ./install_zenon.sh --dry-run -u --accept-eula --skip-prereqs \
+            --install-dir "${RUNNER_TEMP}/zenon-compose" \
+            --overrides "process-gateways/OPCUA/process-gateway-opcua-override.yaml"
+          if [ -e "${RUNNER_TEMP}/zenon-compose" ]; then
+            echo "::error::The dry run left ${RUNNER_TEMP}/zenon-compose behind."
+            exit 1
+          fi
+
+  release:
+    name: Publish release
+    needs: check
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0  # all tags, to find the highest version
+
+      - name: Build release assets
+        run: |
+          mkdir dist
+          cp install_zenon.sh dist/
+          chmod +x dist/install_zenon.sh
+          ( cd dist && sha256sum install_zenon.sh > SHA256SUMS )
+          cat dist/SHA256SUMS
+
+      # Only the highest version becomes "Latest": a fix for an older zenon build
+      # (from a release/* branch) must not take over releases/latest/download/...
+      - name: Determine "latest"
+        id: latest
+        run: |
+          highest="$(git tag --list 'v*' | sort -V | tail -n 1)"
+          if [ "$highest" = "$GITHUB_REF_NAME" ]; then latest=true; else latest=false; fi
+          echo "Highest tag: ${highest} -> latest=${latest}"
+          echo "latest=${latest}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LATEST: ${{ steps.latest.outputs.latest }}
+        run: |
+          software_version="$(sed -n 's/^SOFTWARE_VERSION="\(.*\)"$/\1/p' install_zenon.sh)"
+          notes="Installs **COPA-DATA zenon Service Engine ${software_version}**.
+
+          \`\`\`bash
+          curl -fsSL https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/install_zenon.sh | sudo bash
+          \`\`\`
+
+          Verify a downloaded copy with \`sha256sum -c SHA256SUMS\`."
+          gh release create "$GITHUB_REF_NAME" dist/install_zenon.sh dist/SHA256SUMS \
+            --verify-tag \
+            --title "zINGO ${GITHUB_REF_NAME} (zenon Service Engine ${software_version})" \
+            --notes "$notes" \
+            --generate-notes \
+            --latest="$LATEST"
