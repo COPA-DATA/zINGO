@@ -46,9 +46,9 @@ jobs:
           ./install_zenon.sh --help > /dev/null
           # A dry run downloads and extracts the real Compose package (catches a broken
           # COMPOSE_PKG_URL) and merges an override, then removes everything again.
-          ./install_zenon.sh --dry-run -u --accept-eula --skip-prereqs \
-            --install-dir "${RUNNER_TEMP}/zenon-compose" \
-            --overrides "process-gateways/OPCUA/process-gateway-opcua-override.yaml"
+          ./install_zenon.sh --dry-run -u -a --skip-prereqs \
+            -i "${RUNNER_TEMP}/zenon-compose" \
+            -o process-gateways/OPCUA/process-gateway-opcua-override.yaml
           if [ -e "${RUNNER_TEMP}/zenon-compose" ]; then
             echo "::error::The dry run left ${RUNNER_TEMP}/zenon-compose behind."
             exit 1

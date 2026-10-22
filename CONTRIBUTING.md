@@ -47,9 +47,9 @@ shellcheck install_zenon.sh
 
 # Dry run: downloads and extracts the real Compose package, merges an override,
 # then removes everything again. Needs no root and changes nothing on the system.
-./install_zenon.sh --dry-run -u --accept-eula --skip-prereqs \
-  --install-dir /tmp/zenon-compose \
-  --overrides "process-gateways/OPCUA/process-gateway-opcua-override.yaml"
+./install_zenon.sh --dry-run -u -a --skip-prereqs \
+  -i /tmp/zenon-compose \
+  -o process-gateways/OPCUA/process-gateway-opcua-override.yaml
 ```
 
 Without Docker (e.g. on Windows), the dry run skips the merge with a warning; the pipeline runs it with Docker.
@@ -64,7 +64,7 @@ The pipeline only covers lint and a dry run on Ubuntu. Before a release, test re
 | Beckhoff RT Linux 13 (CX9240, CX5340) | Post-step: static nftables ruleset |
 | Siemens Industrial OS 4.x (IOT2050) | Pre-step: official Debian repository |
 
-Run both an **interactive** install and an **unattended** one (`-u --accept-eula ...`), and re-run once on the same device - every step must be safe to re-run.
+Run both an **interactive** install and an **unattended** one (`-u -a ...`), and re-run once on the same device - every step must be safe to re-run.
 
 ### Conventions in `install_zenon.sh`
 

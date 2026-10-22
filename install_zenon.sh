@@ -8,13 +8,13 @@
 # Runs as a one-line install on Debian-family industrial edge devices:
 #
 #   curl -fsSL https://github.com/COPA-DATA/zINGO/releases/latest/download/install_zenon.sh | sudo bash                                      # interactive
-#   curl -fsSL https://github.com/COPA-DATA/zINGO/releases/latest/download/install_zenon.sh | sudo bash -s -- -u --accept-eula --up   # unattended
+#   curl -fsSL https://github.com/COPA-DATA/zINGO/releases/latest/download/install_zenon.sh | sudo bash -s -- -u -a --up   # unattended
 #
 # Run with -h/--help for the full list of options.
 #
 # This script is licensed under the MIT License. The zenon software and container
 # images it installs are subject to the END USER LICENSE AGREEMENT FOR COPA-DATA
-# SOFTWARE, which must be accepted before installing (see --accept-eula).
+# SOFTWARE, which must be accepted before installing (see -a/--accept-eula).
 # ==============================================================================
 
 set -eo pipefail
@@ -63,7 +63,8 @@ UNATTENDED=false
 SKIP_PREREQS=false
 NO_DOWNLOAD=false
 INSTALL_DIR="$DEFAULT_INSTALL_DIR"
-OVERRIDES_ARG=""
+# --override values, in order; OVERRIDES_SET is true once any was given (even an empty one).
+OVERRIDE_ARGS=()
 OVERRIDES_SET=false
 ENV_KV=()
 AUTO_START=false
@@ -125,10 +126,10 @@ General:
                               Prints the equivalent unattended command for a real run.
   -u, --unattended            Never prompt; accept the default answer everywhere.
                               Required when no terminal is attached (provisioning tools, cloud-init, CI).
-      --log-file FILE         Also append all output to FILE (e.g. /var/log/zingo.log).
+  -l, --log-file FILE         Also append all output to FILE (e.g. /var/log/zingo.log).
 
 License:
-      --accept-eula           Accept the "${EULA_NAME}"
+  -a, --accept-eula           Accept the "${EULA_NAME}"
                               (${EULA_URL}).
                               Required with --unattended; interactive runs ask instead.
 
@@ -136,12 +137,12 @@ Prerequisites:
       --skip-prereqs          Assume Docker/Compose/curl/unzip are installed; skip checks and installation.
 
 Compose package:
-      --no-download           Don't download the package; reuse the one already in --install-dir.
-      --install-dir DIR       Directory to extract the package into (default: ./${DEFAULT_INSTALL_DIR}).
-      --overrides LIST        Comma-separated override files, relative to the package dir, to merge into
-                              compose.merged.yaml (device drivers, protocol gateways, logging, redundancy,
-                              zenon Network, ...).
-      --env KEY=VALUE         Set KEY=VALUE in '.env'. Repeatable.
+  -n, --no-download           Don't download the package; reuse the one already in --install-dir.
+  -i, --install-dir DIR       Directory to extract the package into (default: ./${DEFAULT_INSTALL_DIR}).
+  -o, --override FILE         Override file, relative to the package dir, to merge into compose.merged.yaml
+                              (device drivers, protocol gateways, logging, redundancy, zenon Network, ...).
+                              Repeatable. An empty value (-o '') selects none without asking.
+  -e, --env KEY=VALUE         Set KEY=VALUE in '.env'. Repeatable.
       --up                    Run 'docker compose up -d' once setup is complete.
 
 Options that take a value also accept the --option=VALUE form.
@@ -154,9 +155,9 @@ Examples:
     curl -fsSL ${SCRIPT_URL} | sudo bash
 
   Unattended install with an override and a preset env var:
-    curl -fsSL ${SCRIPT_URL} | sudo bash -s -- -u --accept-eula \\
-      --overrides "process-gateways/OPCUA/process-gateway-opcua-override.yaml" \\
-      --env IIOT_SERVICES_URL=https://iiot.example.com --env DEVICE_MANAGEMENT_AGENT_NAME=new_device --up
+    curl -fsSL ${SCRIPT_URL} | sudo bash -s -- -u -a \\
+      -o process-gateways/OPCUA/process-gateway-opcua-override.yaml \\
+      -e IIOT_SERVICES_URL=https://iiot.example.com -e DEVICE_MANAGEMENT_AGENT_NAME=new_device --up
 EOF
 }
 
@@ -174,15 +175,15 @@ parse_args() {
     while [ $# -gt 0 ]; do
         # --option=VALUE -> --option VALUE
         case "$1" in
-            --install-dir=*|--overrides=*|--env=*|--log-file=*) set -- "${1%%=*}" "${1#*=}" "${@:2}" ;;
+            --install-dir=*|--override=*|--env=*|--log-file=*) set -- "${1%%=*}" "${1#*=}" "${@:2}" ;;
         esac
         case "$1" in
             -d|--dry-run)                 DRY_RUN=true ;;
             -u|--unattended)              UNATTENDED=true ;;
             --skip-prereqs)               SKIP_PREREQS=true ;;
-            --no-download)                NO_DOWNLOAD=true ;;
+            -n|--no-download)             NO_DOWNLOAD=true ;;
             --up)                         AUTO_START=true ;;
-            --accept-eula)                ACCEPT_EULA=true ;;
+            -a|--accept-eula)             ACCEPT_EULA=true ;;
             -v|--version)
                 echo "${PROJECT_NAME} v${ZINGO_VERSION} (installs ${SOFTWARE_NAME} v${SOFTWARE_VERSION})"
                 exit 0
@@ -191,24 +192,24 @@ parse_args() {
                 print_help
                 exit 0
                 ;;
-            --install-dir)
+            -i|--install-dir)
                 require_arg "$1" "${2-}"
                 INSTALL_DIR="$2"
                 shift
                 ;;
-            --overrides)
+            -o|--override)
                 # An empty value is allowed: it explicitly selects no overrides.
                 [ $# -ge 2 ] && [[ "$2" != -* ]] || require_arg "$1" "${2-}"
-                OVERRIDES_ARG="$2"
+                OVERRIDE_ARGS+=("$2")
                 OVERRIDES_SET=true
                 shift
                 ;;
-            --env)
+            -e|--env)
                 require_arg "$1" "${2-}"
                 ENV_KV+=("$2")
                 shift
                 ;;
-            --log-file)
+            -l|--log-file)
                 require_arg "$1" "${2-}"
                 LOG_FILE="$2"
                 shift
@@ -404,7 +405,7 @@ start_logging() {
 # License (EULA)
 # ==============================================================================
 
-# Unattended runs must pass --accept-eula; interactive runs are asked (default: no).
+# Unattended runs must pass -a/--accept-eula; interactive runs are asked (default: no).
 # Runs before anything on the system is changed, so declining leaves no trace.
 require_eula_acceptance() {
     local notice="The ${SOFTWARE_NAME} software and container images installed by this\nscript are subject to the \"${EULA_NAME}\"\n${EULA_URL}\n\n(This installer script itself is licensed under the MIT License.)"
@@ -416,7 +417,7 @@ require_eula_acceptance() {
     fi
 
     if [ "$UNATTENDED" = true ]; then
-        show_error "EULA Not Accepted" "${notice}\n\nUnattended installs must accept the EULA explicitly. After reading it, re-run with --accept-eula, e.g.:\n  curl -fsSL ${SCRIPT_URL} | sudo bash -s -- $(quote_args "${ORIGINAL_ARGS[@]}" --accept-eula)"
+        show_error "EULA Not Accepted" "${notice}\n\nUnattended installs must accept the EULA explicitly. After reading it, re-run with -a (--accept-eula), e.g.:\n  curl -fsSL ${SCRIPT_URL} | sudo bash -s -- $(quote_args "${ORIGINAL_ARGS[@]}" -a)"
         exit 1
     fi
 
@@ -709,7 +710,7 @@ download_compose_package() {
     fi
 
     if [ "$NO_DOWNLOAD" = true ]; then
-        # Reuse an already-extracted package so --env/--overrides still apply.
+        # Reuse an already-extracted package so --env/--override still apply.
         if [ -f "${INSTALL_DIR}/compose.yaml" ]; then
             COMPOSE_PKG_DIR="$(cd "$INSTALL_DIR" && pwd)"
             log_info "Skipping download; reusing the package in ${COMPOSE_PKG_DIR}."
@@ -835,16 +836,14 @@ configure_compose_overrides() {
 
     local selected=() item
     if [ "$OVERRIDES_SET" = true ]; then
-        local raw=()
-        IFS=',' read -ra raw <<< "$OVERRIDES_ARG"
-        for item in "${raw[@]}"; do
+        for item in "${OVERRIDE_ARGS[@]}"; do
             item="$(trim "$item")"
-            if [ -n "$item" ]; then
+            if [ -n "$item" ] && ! in_array "$item" "${selected[@]}"; then
                 selected+=("$item")
             fi
         done
     elif [ "$UNATTENDED" = true ]; then
-        log_info "Unattended: no compose overrides selected by default (pass --overrides to select some)."
+        log_info "Unattended: no compose overrides selected by default (pass -o/--override to select some)."
     else
         echo
         echo "Available compose overrides (device drivers, protocol gateways, logging, zenon Network, ...):"
@@ -1341,13 +1340,13 @@ write_install_record() {
 # Reconstructs every option this run actually resolved to.
 build_equivalent_unattended_command() {
     # The EULA was accepted in this run (it's a precondition), so carry that over.
-    local args=(-u --accept-eula)
+    local args=(-u -a) ov
     [ "$SKIP_PREREQS" = true ] && args+=(--skip-prereqs)
-    [ "$NO_DOWNLOAD" = true ] && args+=(--no-download)
-    [ "$INSTALL_DIR" != "$DEFAULT_INSTALL_DIR" ] && args+=(--install-dir "$INSTALL_DIR")
-    if [ ${#SELECTED_OVERRIDES[@]} -gt 0 ]; then
-        args+=(--overrides "$(join_by ',' "${SELECTED_OVERRIDES[@]}")")
-    fi
+    [ "$NO_DOWNLOAD" = true ] && args+=(-n)
+    [ "$INSTALL_DIR" != "$DEFAULT_INSTALL_DIR" ] && args+=(-i "$INSTALL_DIR")
+    for ov in "${SELECTED_OVERRIDES[@]}"; do
+        args+=(-o "$ov")
+    done
     # --env values are applied in order, so .env edits go last; a passed value for
     # a key that was then edited is dropped as superseded.
     local kv edited_keys=()
@@ -1355,13 +1354,13 @@ build_equivalent_unattended_command() {
         edited_keys+=("${kv%%=*}")
     done
     for kv in "${ENV_KV[@]}"; do
-        in_array "${kv%%=*}" "${edited_keys[@]}" || args+=(--env "$kv")
+        in_array "${kv%%=*}" "${edited_keys[@]}" || args+=(-e "$kv")
     done
     for kv in "${DRY_RUN_ENV_EDITS[@]}"; do
-        args+=(--env "$kv")
+        args+=(-e "$kv")
     done
     [ "$AUTO_START" = true ] && args+=(--up)
-    [ -n "$LOG_FILE" ] && args+=(--log-file "$LOG_FILE")
+    [ -n "$LOG_FILE" ] && args+=(-l "$LOG_FILE")
 
     echo "curl -fsSL ${SCRIPT_URL} | sudo bash -s -- $(quote_args "${args[@]}")"
 }
@@ -1450,11 +1449,11 @@ show_summary() {
         summary_bullet "To perform this exact install for real, unattended, run:"
         summary_command "$(build_equivalent_unattended_command)"
         if [ ${#DRY_RUN_ENV_EDITS[@]} -gt 0 ]; then
-            summary_bullet "Includes your .env edits as --env values (shown in plain text - mind any secrets)."
+            summary_bullet "Includes your .env edits as -e values (shown in plain text - mind any secrets)."
         fi
         if [ ${#DRY_RUN_ENV_REMOVED[@]} -gt 0 ]; then
             summary_bullet "Not included - keys you deleted or commented out in .env can't be passed with"
-            printf '     %s\n' "--env; remove them by hand after the install: ${DRY_RUN_ENV_REMOVED[*]}"
+            printf '     %s\n' "-e; remove them by hand after the install: ${DRY_RUN_ENV_REMOVED[*]}"
         fi
         if [ ${#DRY_RUN_EDITED_OVERRIDES[@]} -gt 0 ]; then
             summary_bullet "Not included - your edits to these Compose files; re-apply them by hand after"
