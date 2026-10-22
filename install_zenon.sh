@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # ==============================================================================
-# zINGO - zenon INstall and GO, v16.0.630631-1
+# zINGO - zenon INstall and GO, v16.0.630631-2
 # Convenience install script for COPA-DATA zenon Service Engine v16.0.630631 in containers
 # Requires: Docker Engine >= 28.0.0, Docker Compose >= 2.36.0
 #
@@ -27,7 +27,7 @@ PROJECT_NAME="zINGO - zenon INstall and GO"
 SOFTWARE_NAME="COPA-DATA zenon Service Engine"
 SOFTWARE_VERSION="16.0.630631"
 # zINGO's own version: the Service Engine build it installs, plus a script revision.
-ZINGO_VERSION="${SOFTWARE_VERSION}-1"
+ZINGO_VERSION="${SOFTWARE_VERSION}-2"
 # This exact version's release asset - used in printed re-run commands, so they reinstall the same version.
 SCRIPT_URL="https://github.com/COPA-DATA/zINGO/releases/download/v${ZINGO_VERSION}/install_zenon.sh"
 
@@ -86,7 +86,9 @@ PUBLISHED_UDP_PORTS=()
 SELECTED_OVERRIDES=()
 CONFLICTING_PACKAGES=()
 REMOVED_PACKAGES=()
-FRESH_DOWNLOAD=false
+# True when the install dir is safe to hand over recursively: created by this run, or a previous install.
+INSTALL_DIR_OURS=false
+PKG_OWNER=""
 ENV_SEEDED=false
 INSTALL_RECORD_WRITTEN=false
 # Dry run only: editor changes, carried into (or flagged next to) the equivalent unattended command.
@@ -170,6 +172,10 @@ require_arg() {
 
 parse_args() {
     while [ $# -gt 0 ]; do
+        # --option=VALUE -> --option VALUE
+        case "$1" in
+            --install-dir=*|--overrides=*|--env=*|--log-file=*) set -- "${1%%=*}" "${1#*=}" "${@:2}" ;;
+        esac
         case "$1" in
             -d|--dry-run)                 DRY_RUN=true ;;
             -u|--unattended)              UNATTENDED=true ;;
@@ -190,20 +196,12 @@ parse_args() {
                 INSTALL_DIR="$2"
                 shift
                 ;;
-            --install-dir=*)
-                require_arg "--install-dir" "${1#*=}"
-                INSTALL_DIR="${1#*=}"
-                ;;
             --overrides)
-                require_arg "$1" "${2-}"
+                # An empty value is allowed: it explicitly selects no overrides.
+                [ $# -ge 2 ] && [[ "$2" != -* ]] || require_arg "$1" "${2-}"
                 OVERRIDES_ARG="$2"
                 OVERRIDES_SET=true
                 shift
-                ;;
-            --overrides=*)
-                # An empty value is allowed here: it explicitly selects no overrides.
-                OVERRIDES_ARG="${1#*=}"
-                OVERRIDES_SET=true
                 ;;
             --env)
                 require_arg "$1" "${2-}"
@@ -214,14 +212,6 @@ parse_args() {
                 require_arg "$1" "${2-}"
                 LOG_FILE="$2"
                 shift
-                ;;
-            --log-file=*)
-                require_arg "--log-file" "${1#*=}"
-                LOG_FILE="${1#*=}"
-                ;;
-            --env=*)
-                require_arg "--env" "${1#*=}"
-                ENV_KV+=("${1#*=}")
                 ;;
             --)
                 shift
@@ -319,8 +309,8 @@ wait_for_enter() {
 show_info()  { printf '\n=== %s ===\n%b\n' "$1" "$2"; }
 # A notice that waits for Enter when interactive.
 show_msg()   { show_info "$@"; wait_for_enter; }
-# Like show_msg, but on stderr.
-show_error() { show_info "$@" >&2; wait_for_enter; }
+# A notice on stderr; callers exit right after, so there's nothing to wait for.
+show_error() { show_info "$@" >&2; }
 
 # /dev/tty is the controlling terminal even when stdin (fd0) is a pipe.
 has_tty() {
@@ -714,6 +704,10 @@ compose_file() {
 }
 
 download_compose_package() {
+    if [ ! -d "$INSTALL_DIR" ] || [ -f "${INSTALL_DIR}/compose.yaml" ]; then
+        INSTALL_DIR_OURS=true
+    fi
+
     if [ "$NO_DOWNLOAD" = true ]; then
         # Reuse an already-extracted package so --env/--overrides still apply.
         if [ -f "${INSTALL_DIR}/compose.yaml" ]; then
@@ -737,7 +731,6 @@ download_compose_package() {
     fi
     local pkg_dir
     pkg_dir="$(cd "$INSTALL_DIR" && pwd)"
-    FRESH_DOWNLOAD=true
     [ "$DRY_RUN" = true ] && register_cleanup "$pkg_dir"
 
     local zip_file="${pkg_dir}/compose_package.zip"
@@ -822,9 +815,12 @@ enable_network_override_companions() {
 configure_compose_overrides() {
     local pkg_dir="$COMPOSE_PKG_DIR"
 
-    # Discover override YAML files anywhere in the package, relative to pkg_dir.
+    # Discover override YAML files anywhere in the package, relative to pkg_dir. Only Compose
+    # files count - they have a top-level 'services:' key; other YAML in the package (e.g.
+    # device-management-agent/otel-collector-config.yaml) is config that 'docker compose' rejects.
     local override_files=() f
     while IFS= read -r f; do
+        grep -q '^services:' "$f" || continue
         f="${f#"$pkg_dir"/}"
         case "$f" in
             compose.yaml|compose.merged.yaml|compose.combined.yaml) continue ;;
@@ -875,7 +871,7 @@ configure_compose_overrides() {
         if in_array "$item" "${override_files[@]}"; then
             valid+=("$item")
         else
-            log_warn "Override '${item}' not found in the package; skipping. Available: ${override_files[*]}"
+            log_warn "'${item}' is not a Compose override file in the package; skipping. Available: ${override_files[*]}"
         fi
     done
     selected=("${valid[@]}")
@@ -895,11 +891,12 @@ configure_compose_overrides() {
         return 1
     fi
 
-    if [ "$UNATTENDED" = false ] && ask_yesno "Review Override Files" \
+    if [ "$UNATTENDED" = false ] && ask_yesno "Review Compose Files" \
         "Several overrides carry settings (certificates, ports, credentials) worth reviewing before they are merged." \
-        "Open the selected override file(s) in an editor now?" true; then
+        "Open compose.yaml and the selected override file(s) in an editor now?" true; then
+        # The base compose.yaml first, so each override is read against what it overrides.
         local sum_before
-        for item in "${selected[@]}"; do
+        for item in compose.yaml "${selected[@]}"; do
             log_info "Opening ${item} for review..."
             sum_before="$(cksum < "${pkg_dir}/${item}")"
             open_in_editor "${pkg_dir}/${item}" || log_warn "No terminal editor (nano/vi) found; edit '${pkg_dir}/${item}' manually."
@@ -981,6 +978,26 @@ apply_env_overrides() {
         fi
         log_ok "Set ${key} in .env"
     done
+}
+
+# Under sudo, everything above was written as root; hand the package over to the user who
+# ran sudo so .env and the overrides can be edited without it. Runs before the stack starts,
+# so directories Docker creates for bind mounts keep their root/container ownership.
+hand_over_to_invoking_user() {
+    [ "$DRY_RUN" = false ] && [ -n "$COMPOSE_PKG_DIR" ] && [ -d "$COMPOSE_PKG_DIR" ] || return 0
+    [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] && id -u "$SUDO_USER" >/dev/null 2>&1 || return 0
+
+    if [ "$INSTALL_DIR_OURS" = false ]; then
+        log_info "${COMPOSE_PKG_DIR} existed before this run; left its ownership as is. To hand it over:"
+        echo "  sudo chown -R $(quote_args "${SUDO_USER}:" "$COMPOSE_PKG_DIR")"
+        return 0
+    fi
+    if chown -R "${SUDO_USER}:" "$COMPOSE_PKG_DIR"; then
+        PKG_OWNER="$SUDO_USER"
+        log_ok "Handed ${COMPOSE_PKG_DIR} over to ${SUDO_USER}."
+    else
+        log_warn "Could not hand ${COMPOSE_PKG_DIR} over to ${SUDO_USER}; its files stay owned by root."
+    fi
 }
 
 # env_entries FILE -> the file's KEY=VALUE lines as set_env_value matches them, one per key (last wins).
@@ -1391,6 +1408,7 @@ show_summary() {
         env_path="${COMPOSE_PKG_DIR}/.env"
     fi
     summary_row "Directory:" "${COMPOSE_PKG_DIR:-Not downloaded}"
+    [ -n "$PKG_OWNER" ] && summary_row "Owner:" "$PKG_OWNER"
     summary_row "Compose file:" "${compose_path:-n/a}"
     summary_row "Environment file:" "${env_path:-n/a}"
     if [ ${#SELECTED_OVERRIDES[@]} -gt 0 ]; then
@@ -1426,7 +1444,7 @@ show_summary() {
     fi
     if [ "$DRY_RUN" = true ]; then
         # The cleanup registered at download time removes them right after this summary.
-        if [ "$FRESH_DOWNLOAD" = true ]; then
+        if [ "$NO_DOWNLOAD" = false ] && [ -n "$COMPOSE_PKG_DIR" ]; then
             summary_bullet "The files downloaded by this dry run are removed again (${COMPOSE_PKG_DIR})."
         fi
         summary_bullet "To perform this exact install for real, unattended, run:"
@@ -1439,7 +1457,7 @@ show_summary() {
             printf '     %s\n' "--env; remove them by hand after the install: ${DRY_RUN_ENV_REMOVED[*]}"
         fi
         if [ ${#DRY_RUN_EDITED_OVERRIDES[@]} -gt 0 ]; then
-            summary_bullet "Not included - your edits to these override files; re-apply them by hand after"
+            summary_bullet "Not included - your edits to these Compose files; re-apply them by hand after"
             printf '     %s\n' "the install: $(join_by ', ' "${DRY_RUN_EDITED_OVERRIDES[@]}")"
         fi
     elif [ -n "$env_path" ]; then
@@ -1447,8 +1465,10 @@ show_summary() {
             summary_bullet "Containers were started automatically (--up). To restart or apply changes:"
             summary_command "$start_cmd"
         else
+            local edit_cmd="sudoedit"
+            [ -n "$PKG_OWNER" ] && edit_cmd="${EDITOR:-nano}"
             summary_bullet "Edit environment variables:"
-            summary_command "sudoedit $(quote_args "$env_path")"
+            summary_command "${edit_cmd} $(quote_args "$env_path")"
             summary_bullet "Start the application containers:"
             summary_command "$start_cmd"
         fi
@@ -1491,6 +1511,7 @@ main() {
 
     log_step "Configuring Compose package"
     configure_compose_package || exit 1
+    hand_over_to_invoking_user
 
     log_step "Running post-steps"
     collect_published_ports
