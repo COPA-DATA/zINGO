@@ -261,13 +261,6 @@ in_array() {
     return 1
 }
 
-trim() {
-    local s="$1"
-    s="${s#"${s%%[![:space:]]*}"}"
-    s="${s%"${s##*[![:space:]]}"}"
-    printf '%s' "$s"
-}
-
 # Paths removed on exit (success, error or Ctrl-C): temp files, partial downloads, dry-run output.
 CLEANUP_PATHS=()
 
@@ -824,7 +817,7 @@ configure_compose_overrides() {
         grep -q '^services:' "$f" || continue
         f="${f#"$pkg_dir"/}"
         case "$f" in
-            compose.yaml|compose.merged.yaml|compose.combined.yaml) continue ;;
+            compose.yaml|compose.merged.yaml) continue ;;
         esac
         override_files+=("$f")
     done < <(find "$pkg_dir" -mindepth 1 -type f \( -name '*.yaml' -o -name '*.yml' \) | sort)
@@ -837,7 +830,6 @@ configure_compose_overrides() {
     local selected=() item
     if [ "$OVERRIDES_SET" = true ]; then
         for item in "${OVERRIDE_ARGS[@]}"; do
-            item="$(trim "$item")"
             if [ -n "$item" ] && ! in_array "$item" "${selected[@]}"; then
                 selected+=("$item")
             fi
@@ -1200,10 +1192,7 @@ Pin: origin deb.debian.org
 Pin-Priority: 100
 EOF
     log_ok "Added ${DEBIAN_REPO_LIST} and ${DEBIAN_REPO_PIN}."
-    HOST_STEPS+=("Pre: added the ${repo_desc}")
-    # Entries starting with a space are shown as continuation lines in the summary.
-    HOST_STEPS+=(" Source: ${DEBIAN_REPO_LIST}")
-    HOST_STEPS+=(" Pin:    ${DEBIAN_REPO_PIN}")
+    HOST_STEPS+=("Pre: added the ${repo_desc}: ${DEBIAN_REPO_LIST}, ${DEBIAN_REPO_PIN}")
 }
 
 # ---- Beckhoff RT Linux ----
@@ -1385,11 +1374,7 @@ show_summary() {
     else
         local host_step
         for host_step in "${HOST_STEPS[@]}"; do
-            if [[ "$host_step" == " "* ]]; then
-                printf '     %s\n' "${host_step# }"
-            else
-                summary_bullet "$host_step"
-            fi
+            summary_bullet "$host_step"
         done
     fi
 
