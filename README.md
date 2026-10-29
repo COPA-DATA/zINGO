@@ -14,12 +14,12 @@ It's built to run interactively and unattended on industrial edge devices.
 
 ## Quick start
 
-The examples install zINGO **v16.0.630631-1**, i.e. zenon Service Engine 16.0.630631, which this README describes. Other versions: see [Releases](https://github.com/COPA-DATA/zINGO/releases).
+The examples install zINGO **v16.0.630631-2**, i.e. zenon Service Engine 16.0.630631, which this README describes. Other versions: see [Releases](https://github.com/COPA-DATA/zINGO/releases).
 
 **One-line install, interactively** (run this from a real terminal so its prompts work):
 
 ```bash
-curl -fsSL https://github.com/COPA-DATA/zINGO/releases/download/v16.0.630631-1/install_zenon.sh | sudo bash
+curl -fsSL https://github.com/COPA-DATA/zINGO/releases/download/v16.0.630631-2/install_zenon.sh | sudo bash
 ```
 
 **Run a local copy** (the script is already on the device, e.g. copied via `scp` or a USB stick):
@@ -32,9 +32,9 @@ sudo ./install_zenon.sh
 **One-line install, fully unattended** (no prompts; needed for cloud-init, provisioning tools, CI, or anywhere else with no terminal attached):
 
 ```bash
-curl -fsSL https://github.com/COPA-DATA/zINGO/releases/download/v16.0.630631-1/install_zenon.sh | sudo bash -s -- -u --accept-eula \
-  --overrides "process-gateways/OPCUA/process-gateway-opcua-override.yaml" \
-  --env IIOT_SERVICES_URL=https://iiot.example.com --env DEVICE_MANAGEMENT_AGENT_NAME=new_device --up
+curl -fsSL https://github.com/COPA-DATA/zINGO/releases/download/v16.0.630631-2/install_zenon.sh | sudo bash -s -- -u -a \
+  -o process-gateways/OPCUA/process-gateway-opcua-override.yaml \
+  -e IIOT_SERVICES_URL=https://iiot.example.com -e DEVICE_MANAGEMENT_AGENT_NAME=new_device --up
 ```
 
 A version-specific URL always installs exactly that zenon Service Engine build - recommended for provisioning scripts, so every device gets the same version. To always get the newest version instead, use the `latest` URL:
@@ -45,7 +45,7 @@ curl -fsSL https://github.com/COPA-DATA/zINGO/releases/latest/download/install_z
 
 Each release also has a `SHA256SUMS` file; verify a downloaded copy with `sha256sum -c SHA256SUMS`.
 
-Unattended runs must pass `--accept-eula` - see [License](#license).
+Unattended runs must pass `-a`/`--accept-eula` - see [License](#license).
 
 ## What it does
 
@@ -54,8 +54,8 @@ Unattended runs must pass `--accept-eula` - see [License](#license).
 
    `--skip-prereqs` skips this step and assumes Docker/Compose/curl/unzip are already installed.
 3. **Verifies Docker works** by pulling and running a `busybox` smoke-test container from Docker Hub (`docker run --rm busybox echo "Hello zenon!"`).
-4. **Downloads and extracts the zenon Compose package** from the COPA-DATA Azure CDN into `./zenon-compose` (or `--install-dir`) - this step is real even under `--dry-run` (see [Dry runs](#dry-runs)). Downloads are retried on transient network errors. `--no-download` skips this and reuses an already-extracted directory instead, so `--env`/`--overrides` can be re-applied without downloading again.
-5. **Selects Compose overrides** (device drivers, protocol gateways, logging, redundancy, zenon Network, ...), either from `--overrides` or an interactive picker. Selecting the zenon Network override together with a companion override (logging server, device management agent, remote transport) automatically uncomments that companion's matching `services:` block in the network override file (it normally requires manual editing per its own readme). When interactive, offers to open the selected file(s) in an editor first - several carry settings (certificates, ports, credentials) worth reviewing - then merges the selection into `compose.merged.yaml` via `docker compose config`.
+4. **Downloads and extracts the zenon Compose package** from the COPA-DATA Azure CDN into `./zenon-compose` (or `--install-dir`) - this step is real even under `--dry-run` (see [Dry runs](#dry-runs)). Downloads are retried on transient network errors. `--no-download` skips this and reuses an already-extracted directory instead, so `--env`/`--override` can be re-applied without downloading again.
+5. **Selects Compose overrides** (device drivers, protocol gateways, logging, redundancy, zenon Network, ...), either from `-o`/`--override` (repeatable) or an interactive picker. Selecting the zenon Network override together with a companion override (logging server, device management agent, remote transport) automatically uncomments that companion's matching `services:` block in the network override file (it normally requires manual editing per its own readme). Only YAML files with a top-level `services:` key are offered, so other config files in the package (e.g. `device-management-agent/otel-collector-config.yaml`) can't be picked by mistake. When interactive, offers to open the base `compose.yaml` and then the selected file(s) in an editor first - several carry settings (certificates, ports, credentials) worth reviewing - then merges the selection into `compose.merged.yaml` via `docker compose config`.
 6. **Configures `.env`**: seeds it from the package's `example.env` on first extraction, applies any `--env KEY=VALUE` values you passed (values are written literally, so `&`, `|` etc. are safe), then - only when running interactively (i.e. not `-u`/`--unattended`) - offers to open it in an editor for review. This comes after override selection because overrides often introduce new variables.
 7. **Runs OS-specific post-steps**, if the detected OS has any - see [Device/OS-specific remarks](#deviceos-specific-remarks).
 8. **Starts the stack** with `docker compose up -d` if `--up` was passed.
@@ -70,7 +70,7 @@ Every step is safe to re-run.
 
 - `unzip` is required even for `--dry-run` (unless you also pass `--no-download`, in which case nothing is downloaded and the check is skipped) - the installer fails fast with a clear message rather than silently falling back to a real, non-dry-run prerequisite install.
 - Once the summary is shown, everything the dry run itself downloaded/extracted is deleted again (`compose.yaml`, `.env`, `compose.merged.yaml`, any override edits, the whole install directory), so no trace of the dry run is left on disk - also when it fails or is interrupted. A directory reused via `--no-download` is never touched, and a dry run refuses to download into an install directory that already contains files (it would overwrite and then delete them).
-- The summary's final step prints the equivalent `-u`/`--unattended` command - with every option this run actually resolved to (`--skip-prereqs`, `--no-download`, `--install-dir`, the overrides you picked, every `--env` you passed, `--up`) - that would perform the same install for real.
+- The summary's final step prints the equivalent `-u`/`--unattended` command, using the short options - with every option this run actually resolved to (`--skip-prereqs`, `-n`, `-i`, one `-o` per override you picked, every `-e` you passed, `--up`) - that would perform the same install for real. Edits you make to `.env` in the editor during the dry run are carried into it as `-e` values, so an interactive dry run doubles as a builder for the unattended command. Keys you delete or comment out in `.env`, and edits to `compose.yaml` or override files, can't be expressed as options; the summary lists them so you can re-apply them by hand after the install.
 
 ## Options
 
@@ -83,10 +83,10 @@ General:
                               Prints the equivalent unattended command for a real run.
   -u, --unattended            Never prompt; accept the default answer everywhere.
                               Required when no terminal is attached (provisioning tools, cloud-init, CI).
-      --log-file FILE         Also append all output to FILE (e.g. /var/log/zingo.log).
+  -l, --log-file FILE         Also append all output to FILE (e.g. /var/log/zingo.log).
 
 License:
-      --accept-eula           Accept the "END USER LICENSE AGREEMENT FOR COPA-DATA SOFTWARE"
+  -a, --accept-eula           Accept the "END USER LICENSE AGREEMENT FOR COPA-DATA SOFTWARE"
                               (https://www.copadata.com/en/terms-conditions/).
                               Required with --unattended; interactive runs ask instead.
 
@@ -94,12 +94,12 @@ Prerequisites:
       --skip-prereqs          Assume Docker/Compose/curl/unzip are installed; skip checks and installation.
 
 Compose package:
-      --no-download           Don't download the package; reuse the one already in --install-dir.
-      --install-dir DIR       Directory to extract the package into (default: ./zenon-compose).
-      --overrides LIST        Comma-separated override files, relative to the package dir, to merge into
-                              compose.merged.yaml (device drivers, protocol gateways, logging, redundancy,
-                              zenon Network, ...).
-      --env KEY=VALUE         Set KEY=VALUE in '.env'. Repeatable.
+  -n, --no-download           Don't download the package; reuse the one already in --install-dir.
+  -i, --install-dir DIR       Directory to extract the package into (default: ./zenon-compose).
+  -o, --override FILE         Override file, relative to the package dir, to merge into compose.merged.yaml
+                              (device drivers, protocol gateways, logging, redundancy, zenon Network, ...).
+                              Repeatable. An empty value (-o '') selects none without asking.
+  -e, --env KEY=VALUE         Set KEY=VALUE in '.env'. Repeatable.
       --up                    Run 'docker compose up -d' once setup is complete.
 
 Options that take a value also accept the --option=VALUE form.
@@ -114,15 +114,16 @@ Run `install_zenon.sh --help` for the same reference, and `install_zenon.sh --dr
 
 ```bash
 # Preview what would happen, without installing or downloading anything
-./install_zenon.sh --dry-run -u --accept-eula
+./install_zenon.sh --dry-run -u -a
 
-# Unattended install with one override and a preset env var, then start the stack
-sudo ./install_zenon.sh -u --accept-eula \
-  --overrides "process-gateways/OPCUA/process-gateway-opcua-override.yaml" \
-  --env ZENON_PORT=4840 --up
+# Unattended install with two overrides and a preset env var, then start the stack
+sudo ./install_zenon.sh -u -a \
+  -o process-gateways/OPCUA/process-gateway-opcua-override.yaml \
+  -o zenon-network/zenon-network-override.yaml \
+  -e ZENON_PORT=4840 --up
 
 # Prerequisites already installed elsewhere; just fetch and configure the package
-sudo ./install_zenon.sh --skip-prereqs --env ZENON_PORT=4840
+sudo ./install_zenon.sh --skip-prereqs -e ZENON_PORT=4840
 ```
 
 ## How it detects your OS
@@ -166,7 +167,7 @@ Every successful real run (not `--dry-run`) writes `/var/lib/zingo/install.env`,
 ```bash
 # Written by zINGO (install_zenon.sh) on each successful run - do not edit.
 ZINGO_RECORD_FORMAT=1
-ZINGO_VERSION=16.0.630631-1
+ZINGO_VERSION=16.0.630631-2
 SOFTWARE_VERSION=16.0.630631
 INSTALLED_AT=2026-10-07T08:44:12Z
 INSTALL_DIR=/home/admin/zenon-compose
@@ -175,7 +176,7 @@ OVERRIDES=process-gateways/OPCUA/process-gateway-opcua-override.yaml
 HOST_OS=debian-12
 ```
 
-- `INSTALL_DIR` is absolute; `COMPOSE_FILE` is relative to it (`compose.yaml`, or `compose.merged.yaml` when overrides were merged); `OVERRIDES` is the comma-separated `--overrides` list.
+- `INSTALL_DIR` is absolute; `COMPOSE_FILE` is relative to it (`compose.yaml`, or `compose.merged.yaml` when overrides were merged); `OVERRIDES` is the comma-separated list of the selected overrides.
 - Values are shell-quoted, so read the file with `source /var/lib/zingo/install.env` in bash rather than parsing it.
 - It describes the **last** run only: running zINGO again (e.g. into another `--install-dir`) replaces it. It's replaced atomically, so readers never see a half-written file.
 - `ZINGO_RECORD_FORMAT` is bumped only when keys change incompatibly, so readers can check it first.
@@ -185,12 +186,12 @@ HOST_OS=debian-12
 - **Log file:** `--log-file FILE` appends everything the script prints (stdout and stderr) to `FILE`, with a timestamped header per run - useful for unattended installs nobody watches. Prompts and editors use the terminal directly, so answers you type aren't logged. If the file can't be written, the script warns and continues without it.
 
 - **Internet access required for:** Docker's apt repository (prerequisite install), Docker Hub (the verification container), the COPA-DATA Azure CDN (the Compose package), and the COPA-DATA registry (container images pulled by Compose later).
-- **Root:** required for everything except `--dry-run`. The script does not self-elevate - always invoke it with `sudo` (locally, or as `curl | sudo bash`); otherwise it exits immediately with a re-run hint.
+- **Root:** required for everything except `--dry-run`. The script does not self-elevate - always invoke it with `sudo` (locally, or as `curl | sudo bash`); otherwise it exits immediately with a re-run hint. When run via `sudo`, the install directory and its files are then handed over to the user who ran `sudo`, so `.env` and the overrides can be edited without it (a pre-existing directory that isn't a previous install is left as is). `docker compose` itself still needs `sudo` (or membership in the `docker` group).
 - **Prompts under `curl | bash`:** even though stdin is consumed by the piped script, prompts are read from `/dev/tty` (the controlling terminal), so interactive installs still work when run from a real terminal. Anywhere with no terminal at all (headless provisioning, systemd units, CI) **must** pass `-u`/`--unattended` - the script checks for a terminal up front and exits immediately with an error if none is attached and `-u` wasn't given.
 
 ## Versioning
 
-zINGO's version is the zenon Service Engine build it installs, plus a script revision: `v16.0.630631-1` is the first revision for Service Engine 16.0.630631. A script-only fix bumps the suffix (`-2`, ...); a new Service Engine build resets it to `-1`. `--version` prints it, and it's shown in the welcome dialog, the setup summary, the log file and the install record.
+zINGO's version is the zenon Service Engine build it installs, plus a script revision: `v16.0.630631-2` is the second revision for Service Engine 16.0.630631. A script-only fix bumps the suffix (`-2`, ...); a new Service Engine build resets it to `-1`. `--version` prints it, and it's shown in the welcome dialog, the setup summary, the log file and the install record.
 
 ## Contributing
 
@@ -204,4 +205,4 @@ How to work on the script, test changes and release new versions is described in
 The script asks you to accept the EULA before it changes anything on the system:
 
 - **Interactive runs** show the EULA notice and ask; the default answer is *no*. Declining exits immediately, before any package, repository or file is touched.
-- **Unattended runs** (`-u`) must pass `--accept-eula`; otherwise they exit with an error. By passing it you confirm that you have read and accept the EULA.
+- **Unattended runs** (`-u`) must pass `-a`/`--accept-eula`; otherwise they exit with an error. By passing it you confirm that you have read and accept the EULA.
