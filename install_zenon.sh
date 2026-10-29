@@ -199,7 +199,9 @@ parse_args() {
                 ;;
             -o|--override)
                 # An empty value is allowed: it explicitly selects no overrides.
-                [ $# -ge 2 ] && [[ "$2" != -* ]] || require_arg "$1" "${2-}"
+                if [ $# -lt 2 ] || [[ "$2" == -* ]]; then
+                    require_arg "$1" "${2-}"
+                fi
                 OVERRIDE_ARGS+=("$2")
                 OVERRIDES_SET=true
                 shift
